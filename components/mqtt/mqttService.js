@@ -24,7 +24,7 @@ const connectionOptions = [
     password: 'GbEZuiZhdjVdlub',
     ssl: true,
     caPath: path.join(__dirname, '..', '..', 'certs', 'Sectigo(AAA).crt'),
-    topic : 'automat/v2/1401/41/lacon/data',
+    topic : 'automat/v2/1401/41/lacon/lcd',
   }
 ];
 
@@ -40,21 +40,21 @@ function connect(serverIndex) {
     const clientId = `mqtt_${Math.random().toString(16).slice(3)}`;
     const connectUrl = `${selectedServer.host}:${selectedServer.port}`;
 
-      const connectOptions = {
-        clientId,
-        clean: true,
-        connectTimeout: 4000,
-        username: selectedServer.username,
-        password: selectedServer.password,
-        reconnectPeriod: 1000,
-      }
+    const connectOptions = {
+      clientId,
+      clean: true,
+      connectTimeout: 4000,
+      username: selectedServer.username,
+      password: selectedServer.password,
+      reconnectPeriod: 1000,
+    }
 
     if (selectedServer.ssl) {
       connectOptions.protocol = 'mqtts';
 
       // connectOptions.rejectUnauthorized = false;
 
-      if (selectedServer.caPath && fs.existsSync(selectedServer.caPath && selectedServer.name === "Test Server")) {
+      if (selectedServer.caPath && fs.existsSync(selectedServer.caPath) && selectedServer.name === "Test Server") {
         console.log('Loading CA certificate for Test Server');
 
         // Add LWT (Last Will and Testament) configuration
@@ -69,7 +69,7 @@ function connect(serverIndex) {
         connectOptions.ca = fs.readFileSync(selectedServer.caPath);
       }
 
-      if (selectedServer.caPath && fs.existsSync(selectedServer.caPath && selectedServer.name === "Private Server")) {
+      if (selectedServer.caPath && fs.existsSync(selectedServer.caPath) && selectedServer.name === "Private Server") {
         console.log('Loading CA certificate for Private Server');
         
         // Add LWT (Last Will and Testament) configuration
@@ -105,7 +105,9 @@ function connect(serverIndex) {
       publishMessage('test/online', '1', { retain: true })
         .then(() => {
           console.log('Published online status');
-          mqttClient.subscribe([topic], (error) => {
+
+          // Subscribe to the topic
+          mqttClient.subscribe([topic], { qos:1 }, (error, granted) => {
             if(error) {
               console.error('Failed to subscribe to topic:', error);
               return reject(error);
@@ -118,6 +120,10 @@ function connect(serverIndex) {
           console.error('Failed to publish online status:', error);
           resolve('Connected but failed to publish online status');
         });
+    });
+
+    mqttClient.on("packetreceive", (packet) =>{	
+      console.log("receive packet: " + JSON.stringify(packet));  
     });
 
     mqttClient.on('error', (error) => {
