@@ -66,6 +66,7 @@ app.get('/api/users', (req, res) => {
   res.json(safeUsers);
 });
 
+
 app.use(express.static(path.join(__dirname, '../frontend/build')));
 
 app.get('/', function (req, res) {

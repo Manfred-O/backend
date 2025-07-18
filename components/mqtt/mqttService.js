@@ -112,7 +112,7 @@ function connect(serverIndex) {
               console.error('Failed to subscribe to topic:', error);
               return reject(error);
             }
-            console.log(`Subscribe to topic '${topic}'`)
+            console.log(`Subscribe to topic '${topic}' with qos ${granted[0].qos}`);
           })
           resolve('Connected and published online status');
         })

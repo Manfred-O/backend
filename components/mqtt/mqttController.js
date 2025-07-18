@@ -22,8 +22,25 @@ async function disconnect(req, res) {
 
 async function publishMessage(req, res) {
   const { topic, message } = req.body;
+
+    if (!message) {
+    return res.status(400).json({ error: 'Message is required' });
+  }
+
+  let jsonMessage;
   try {
-    await mqttService.publishMessage(topic, message);
+    // Try to parse the message as JSON
+    jsonMessage = JSON.parse(message);
+  } catch (error) {
+    // If parsing fails, wrap the message in a JSON object
+    jsonMessage = { content: message };
+  }
+
+  console.log(`Publishing message to topic: ${topic}`);
+  console.log('Message content:', jsonMessage);
+
+  try {
+    await mqttService.publishMessage(topic, JSON.stringify(jsonMessage));
     res.json({ status: 'Message published successfully' });
   } catch (error) {
     res.status(500).json({ status: 'Failed to publish message', error: error.message });
