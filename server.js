@@ -9,10 +9,15 @@ const bcrypt = require('bcrypt');
 const { WebSocketServer } = require('ws');
 
 const mqttRoutes = require('./routes/mqttRoutes');
+const mqtt = require('./components/mqtt/mqttService');
 const { readUsers, writeUsers } = require('./components/db/users');
 
 const app = express();
 const port = process.env.PORT || 5000;
+
+const clientsMap = new Map();
+let mqttConnected = false;
+let connectedClientId = null;
 
 /*
 var options = {
@@ -99,68 +104,176 @@ webserver.on('upgrade', (req,socket,head) => {
 // Create a WebSocket server
 const wss = new WebSocketServer({ noServer: true })
 
+// Initialize MQTT service with WebSocket server
+mqtt.initializeMqttService(wss);
+
 // WebSocket connection handling
 wss.on('connection', ws => {
-  console.log('New client connected');  
+  // Generate a unique ID for the WebSocket connection
+  ws.id = wss.getUniqueID();
 
+  console.log(`New client connected with ID: ${ws.id}`)  
+
+  // Add the client to the Map
+  /*
+  clientsMap.set(ws.id, {
+    ws: ws,
+    isAlive: true,
+    mqttConnected: false
+  });
+  */
+  // Initialize the client in the Map
+  clientsMap.set(ws.id, {
+    ws: ws,
+    isAlive: true
+  });
+
+  // Ping pong to maintain the connection
+  ws.on('ping', () => {
+    const client = clientsMap.get(ws.id);
+    if (client) {
+      client.isAlive = true;
+    }
+    ws.ping();
+  });
+
+  // Handle client disconnection
   ws.on('close', (code,reason) => {
-    console.log('Client has disconnected!')
-    console.log("code " + code + " reason " + reason)
-    })
+    console.log(`Client with ID: ${ws.id} has disconnected!`);
+    console.log("code " + code + " reason " + reason);
+    clientsMap.delete(ws.id);
+    if (ws.id === connectedClientId && clientsMap.size > 0) {
+      // If the disconnected client was the one who initiated the MQTT connection,
+      // and there are still other clients, pass the connection to another client
+      connectedClientId = clientsMap.keys().next().value;
+    } else if (clientsMap.size === 0 && mqttConnected) {
+      // If this was the last client, disconnect from MQTT
+      mqtt.disconnect();
+      mqttConnected = false;
+      connectedClientId = null;
+    }
+  })
 
   // Handle incoming messages
-  ws.on('message', message => {
+  ws.on('message', async (message) => {
 
     // Parse the incoming message
     const data = JSON.parse(message);
+
+    // Get the client from the Map
+    const client = clientsMap.get(ws.id);
 
     // Invoke the route or handler based on the incoming message    
     if (data.route === 'connect') {
       // Handle connect action
       console.log('Mqtt Client connected');
-      ws.send(JSON.stringify({ success: true, message: 'Connected to MQTT broker' }));
+      if (!mqttConnected) {
+        console.log(`Connecting to MQTT server with index: ${data.serverIndex}`);
+        if (data.serverIndex === undefined || data.serverIndex < 0) {
+          ws.send(JSON.stringify({ error: 'serverIndex is required' }));  
+          return;
+        }
+
+        try {
+          const status = await mqtt.connect(data.serverIndex);
+          console.log(`Status: ${status}`);
+          if (status === 'connected' || status.includes('success')) {
+            mqttConnected = true;
+            connectedClientId = ws.id;
+            ws.send(JSON.stringify({ status: status }));
+          } else {
+            mqttConnected = false;
+            ws.send(JSON.stringify({ status: status }));
+          }
+        } catch (error) {
+          console.error('Error connecting to MQTT broker:', error);
+          mqttConnected = false;
+          ws.send(JSON.stringify({ error: 'Failed to connect to MQTT broker' }));
+          return;
+        }
+      } else {
+        ws.send(JSON.stringify({ status: 'Already connected to MQTT broker' }));
+      }
     } else if (data.route === 'disconnect') {
       // Handle disconnect action
       console.log('Mqtt Client disconnected');
-      ws.send(JSON.stringify({ success: true, message: 'Disconnected from MQTT broker' }));
+      if (mqttConnected && clientsMap.size ===1) {
+        const status = await mqtt.disconnect();
+        console.log(`Status: ${status}`);
+        mqttConnected = false;
+        connectedClientId = null
+        ws.send(JSON.stringify({ status: status }));
+      } else if (!mqttConnected) {
+        ws.send(JSON.stringify({ status: 'Not connected to MQTT broker' }));
+      } else {
+        ws.send(JSON.stringify({ status: 'Other clients are still connected' }));
+      }
     } else if (data.route === 'publish') {
       // Handle publish action
       console.log(`Publishing message: ${data.message} to topic: ${data.topic}`);
-      ws.send(JSON.stringify({ success: true, message: `Message published to ${data.topic}` }));
-    } else if (data.route === 'subscribe') {
-      // Handle subscribe action
-      console.log(`Subscribed to topic: ${data.topic}`);
-      ws.send(JSON.stringify({ success: true, message: `Subscribed to ${data.topic}` }));
-    } else {
-      ws.send(JSON.stringify({ error: 'Unknown route' }));
-    } 
+      if (!data.topic || !data.message) {
+        ws.send(JSON.stringify({ error: 'topic and message are required' }));
+        return;
+      }
+      if (!mqttConnected) {
+        ws.send(JSON.stringify({ error: 'Not connected to MQTT broker' }));
+        return;
+      }
+      const status = await mqtt.publishMessage(data.topic, data.message, { retain: data.retain || false  });
+      // Send a success message back to the client
+      ws.send(JSON.stringify({ status: status }));
+    }
   });
 
-  ws.on('pong', () => {
-    ws.isAlive = true;
+  // Handle WebSocket pong messages to maintain the connection
+  ws.on('pong', (data) => {
+    console.log(`Received ${data} from client ${ws.id}`);
+    const client = clientsMap.get(ws.id);
+    if (client) {
+      client.isAlive = true;
+    }
   });
   
-  ws.onerror = function () {
-    console.log('websocket error')
-  }
+  // Handle WebSocket errors
+  ws.on('error', function () {
+    console.log('websocket error');
+    clientsMap.delete(ws.id);
+  });
 
 });
 
-let close = 0;
-const interval = setInterval(function ping() {
-
-  wss.clients.forEach(function each(ws) {
-    if (ws.isAlive === false) {
-      console.log('ping error');
-      return ws.terminate();
+wss.getUniqueID = function () {
+    function s4() {
+        return Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
     }
-    close++;
-    ws.isAlive = false;
-    console.log(`sending ping number  ${close}`);
-    ws.ping('ping');
+    return s4() + s4() + '-' + s4();
+};
+
+const interval = setInterval(function ping() {
+  clientsMap.forEach((client, id) => {
+    if (client.isAlive === false) {
+      console.log(`ping error terminating connection for client ${id}`);
+      client.ws.terminate();
+      clientsMap.delete(id);
+      return;
+    }
+    client.isAlive = false;
+    console.log(`sending ping to client ${id}`);
+    client.ws.ping('ping');
   });
 }, 30000);
 
+// Modify the close event handler
 wss.on('close', function close() {
+  console.log('websocket closed');
   clearInterval(interval);
+  clientsMap.forEach((client) => {
+    client.ws.terminate();
+  });
+  clientsMap.clear();
+  if (mqttConnected) {
+    mqtt.disconnect();
+    mqttConnected = false;
+    connectedClientId = null;
+  }
 });

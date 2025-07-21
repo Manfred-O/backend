@@ -1,6 +1,7 @@
 const mqtt = require('mqtt');
 const fs = require('fs');
 const path = require('path');
+const WebSocket = require('ws')
 
 var topic = null;
 let mqttClient = null;
@@ -14,7 +15,7 @@ const connectionOptions = [
     password: '123456',
     ssl: true,
     caPath: path.join(__dirname, '..', '..', 'certs', 'rootCA.crt'),
-    topic : 'test/data',
+    topics : ['test/data'],
   },
   {
     name: "Private Server",
@@ -24,9 +25,18 @@ const connectionOptions = [
     password: 'GbEZuiZhdjVdlub',
     ssl: true,
     caPath: path.join(__dirname, '..', '..', 'certs', 'Sectigo(AAA).crt'),
-    topic : 'automat/v2/1401/41/lacon/lcd',
+    topics : ['automat/v2/1401/41/lacon/lcd',
+              'automat/v2/1401/41/lacon/receive',
+              'automat/v2/1401/41/lacon/update'
+             ],
   }
 ];
+
+let wss = null;
+
+function initializeMqttService(webSocketServer) {
+  wss = webSocketServer;
+}
 
 function connect(serverIndex) {
   return new Promise((resolve, reject) => {
@@ -94,7 +104,7 @@ function connect(serverIndex) {
     }
 
     // Set the topic to subscribe to
-    topic = selectedServer.topic;
+    topic = selectedServer.topics;
 
     mqttClient = mqtt.connect(connectUrl, connectOptions);
 
@@ -107,14 +117,17 @@ function connect(serverIndex) {
           console.log('Published online status');
 
           // Subscribe to the topic
-          mqttClient.subscribe([topic], { qos:1 }, (error, granted) => {
+          for (let i = 0; i < topic.length; i++) {
+            mqttClient.subscribe([topic[i]], { qos:1 }, (error, granted) => {
             if(error) {
               console.error('Failed to subscribe to topic:', error);
               return reject(error);
             }
-            console.log(`Subscribe to topic '${topic}' with qos ${granted[0].qos}`);
-          })
-          resolve('Connected and published online status');
+            console.log(`Subscribed to topic '${topic[i]}' with qos ${granted[0].qos}`);
+            })
+          } 
+
+          resolve('Connected and published online status success');
         })
         .catch((error) => {
           console.error('Failed to publish online status:', error);
@@ -133,11 +146,18 @@ function connect(serverIndex) {
 
     mqttClient.on('message', (topic, message) => {
       console.log('Received message:', topic, message.toString());
-      // Here you can implement WebSocket to send messages to the client in real-time
+      // Broadcast the message to all connected WebSocket clients
+      if(wss && wss.clients.size > 0) {
+        wss.clients.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ topic, status: 'received', message: message.toString() }));
+          }
+        });
+      }
     });
 
     mqttClient.on('reconnect', (error) => {
-      console.error('reconnect failed', error)
+        console.error('reconnect failed', error)
     });
 
   });
@@ -192,5 +212,5 @@ function publishMessage(topic, message, options = {}) {
   });  
 }
 
-module.exports = { connect, disconnect, publishMessage };
+module.exports = {initializeMqttService, connect, disconnect, publishMessage };
 
