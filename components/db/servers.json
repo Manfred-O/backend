@@ -1,0 +1,26 @@
+[
+  {
+    "name": "Test Server",
+    "host": "mqtt://server1.sander-elektronik.com",
+    "port": 8883,
+    "username": "manfred",
+    "password": "123456",
+    "ssl": true,
+    "topics" : [{ "value": "test/data", "label": "Test Data" }, 
+                { "value": "private/data", "label": "Private Data" }, 
+                { "value": "secret/data", "label": "Secret Data" }
+               ]
+  },
+  {
+    "name": "Local Server",
+    "host": "mqtt://localhost",
+    "port": 8883,
+    "username": "manfred",
+    "password": "123456",
+    "ssl": true,
+    "topics" : [ {"value":"automat/v2/1401/41/lacon/lcd", "label":"LCD"},
+                {"value": "automat/v2/1401/41/lacon/receive", "label": "Receive"},
+                {"value": "automat/v2/1401/41/lacon/update", "label": "Update"}
+               ]
+  }
+]

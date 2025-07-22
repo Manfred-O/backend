@@ -3,69 +3,48 @@ const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws')
 
-var topic = null;
+
 let mqttClient = null;
-
-const connectionOptions = [
-  {
-    name: "Test Server",
-    host: "mqtt://server1.sander-elektronik.com",
-    port: 8883,
-    username: 'manfred',
-    password: '123456',
-    ssl: true,
-    caPath: path.join(__dirname, '..', '..', 'certs', 'rootCA.crt'),
-    topics : ['test/data'],
-  },
-  {
-    name: "Private Server",
-    host: "mqtt://shelf-backbone-test.witglobal.net",
-    port: 9883,
-    username: 'lacon',
-    password: 'GbEZuiZhdjVdlub',
-    ssl: true,
-    caPath: path.join(__dirname, '..', '..', 'certs', 'Sectigo(AAA).crt'),
-    topics : ['automat/v2/1401/41/lacon/lcd',
-              'automat/v2/1401/41/lacon/receive',
-              'automat/v2/1401/41/lacon/update'
-             ],
-  }
-];
-
 let wss = null;
 
 function initializeMqttService(webSocketServer) {
   wss = webSocketServer;
 }
 
-function connect(serverIndex) {
+function connect(server) {
   return new Promise((resolve, reject) => {
-    const selectedServer = connectionOptions[serverIndex];
-    console.log(`Connecting to MQTT server: ${selectedServer.name} as ${selectedServer.username}`);
+    //const selectedServer = connectionOptions[serverIndex];
+    console.log(`Connecting to MQTT server: ${server.name} as ${server.username}`);
 
     if (mqttClient) {
       mqttClient.end();
     }
 
     const clientId = `mqtt_${Math.random().toString(16).slice(3)}`;
-    const connectUrl = `${selectedServer.host}:${selectedServer.port}`;
+    const connectUrl = `${server.host}:${server.port}`;
 
     const connectOptions = {
       clientId,
       clean: true,
       connectTimeout: 4000,
-      username: selectedServer.username,
-      password: selectedServer.password,
+      username: server.username,
+      password: server.password,
       reconnectPeriod: 1000,
     }
 
-    if (selectedServer.ssl) {
+    if (server.ssl) {
       connectOptions.protocol = 'mqtts';
 
       // connectOptions.rejectUnauthorized = false;
 
-      if (selectedServer.caPath && fs.existsSync(selectedServer.caPath) && selectedServer.name === "Test Server") {
+      if (server.name === "Test Server") {
         console.log('Loading CA certificate for Test Server');
+
+        if(fs.existsSync(path.join(__dirname, '..', '..', 'certs', 'rootCA.crt')) === false) 
+        {
+          console.error('CA certificate not found for Test Server');
+          return reject(new Error('CA certificate not found for Test Server'));
+        }
 
         // Add LWT (Last Will and Testament) configuration
         connectOptions.will = {
@@ -76,12 +55,18 @@ function connect(serverIndex) {
         }
 
         // Load the CA certificate for the Test Server)
-        connectOptions.ca = fs.readFileSync(selectedServer.caPath);
+        connectOptions.ca = fs.readFileSync(path.join(__dirname, '..', '..', 'certs', 'rootCA.crt'));
       }
 
-      if (selectedServer.caPath && fs.existsSync(selectedServer.caPath) && selectedServer.name === "Private Server") {
+      if (server.name === "Private Server") {
         console.log('Loading CA certificate for Private Server');
         
+        if(fs.existsSync(path.join(__dirname, '..', '..', 'certs', 'rootCA_local.crt')) === false) 
+        {
+          console.error('CA certificate not found for Private Server');
+          return reject(new Error('CA certificate not found for Private Server'));
+        }
+
         // Add LWT (Last Will and Testament) configuration
         connectOptions.will = {
           topic: 'automat/v2/1401/41/lacon/msg/fromSys/online',
@@ -91,7 +76,7 @@ function connect(serverIndex) {
         }
 
         // Load the CA certificate for the Test Server)
-        connectOptions.ca = fs.readFileSync(selectedServer.caPath);
+        connectOptions.ca = fs.readFileSync(path.join(__dirname, '..', '..', 'certs', 'rootCA_local.crt'));
       }      
 
       // if (selectedServer.certPath && fs.existsSync(selectedServer.certPath && selectedServer.name === "Test Server")) {
@@ -104,7 +89,7 @@ function connect(serverIndex) {
     }
 
     // Set the topic to subscribe to
-    topic = selectedServer.topics;
+    //topic = server.topics;
 
     mqttClient = mqtt.connect(connectUrl, connectOptions);
 
@@ -117,13 +102,13 @@ function connect(serverIndex) {
           console.log('Published online status');
 
           // Subscribe to the topic
-          for (let i = 0; i < topic.length; i++) {
-            mqttClient.subscribe([topic[i]], { qos:1 }, (error, granted) => {
+          for (let i = 0; i < server.topics.length; i++) {
+            mqttClient.subscribe([server.topics[i].value], { qos:1 }, (error, granted) => {
             if(error) {
               console.error('Failed to subscribe to topic:', error);
               return reject(error);
             }
-            console.log(`Subscribed to topic '${topic[i]}' with qos ${granted[0].qos}`);
+            console.log(`Subscribed to topic '${server.topics[i].value}' with qos ${granted[0].qos}`);
             })
           } 
 
@@ -206,7 +191,7 @@ function publishMessage(topic, message, options = {}) {
         reject(error);
       } else {
         console.log('Message published successfully');
-        resolve();
+        resolve('success');
       }
     });
   });  

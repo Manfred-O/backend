@@ -11,6 +11,7 @@ const { WebSocketServer } = require('ws');
 const mqttRoutes = require('./routes/mqttRoutes');
 const mqtt = require('./components/mqtt/mqttService');
 const { readUsers, writeUsers } = require('./components/db/users');
+const { readServers } = require('./components/db/servers');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -28,7 +29,7 @@ var options = {
 };
 */
 
-// Uncomment the line below to use HTTPS instead of HTT
+// Uncomment the line below to use HTTPS instead of HTTP
 //const webserver = https.createServer(options, app);
 
 // Uncomment the line below to use HTTP instead of HTTPS
@@ -38,7 +39,7 @@ app.use(cors());
 app.use(bodyParser.json());
 
 app.get('/api/hello', (req, res) => {
-  res.json({ message: 'Hello from the backend!' });
+  res.json({ message: 'Server up and running!' });
 });
 
 app.post('/api/register', async (req, res) => {
@@ -73,6 +74,33 @@ app.get('/api/users', (req, res) => {
   const users = readUsers();
   const safeUsers = users.map(({ username, email }) => ({ username, email }));
   res.json(safeUsers);
+});
+
+app.get('/api/servers', (req, res) => {
+  console.log('Fetching servers from file');  
+  const servers = readServers();
+  console.log(servers);
+  if (!servers || servers.length === 0) {
+    return res.status(404).json({ error: 'No servers found' });
+  }
+  res.json(servers);
+});
+
+app.get('/api/image', (req, res) => {
+  console.log('Fetching image from file');  
+  // Adjust the path to your image file as needed
+  fs.readFile('images/istockphoto-2167092274-1024x1024.jpg', (err, data) => {
+    if (err) {
+      console.error('Error reading image file:', err);
+      return res.status(500).json({ error: 'Error reading image file' });
+    }
+    res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+    console.log('Sending image data');
+
+    // Send the image data
+    res.end(data);
+  }
+  );
 });
 
 app.use(express.static(path.join(__dirname, '../frontend/build')));
@@ -174,8 +202,16 @@ wss.on('connection', ws => {
           return;
         }
 
+        const servers = readServers();
+        if (data.serverIndex >= servers.length) {
+          ws.send(JSON.stringify({ error: 'Invalid serverIndex' }));  
+          return;
+        }
+
+        console.log(`Connected to MQTT server with index: ${servers[data.serverIndex].name}`);       
+
         try {
-          const status = await mqtt.connect(data.serverIndex);
+          const status = await mqtt.connect(servers[data.serverIndex]);
           console.log(`Status: ${status}`);
           if (status === 'connected' || status.includes('success')) {
             mqttConnected = true;
@@ -196,7 +232,7 @@ wss.on('connection', ws => {
       }
     } else if (data.route === 'disconnect') {
       // Handle disconnect action
-      console.log('Mqtt Client disconnected');
+      console.log(`Mqtt Client should disconnect ${clientsMap.size}`);
       if (mqttConnected && clientsMap.size ===1) {
         const status = await mqtt.disconnect();
         console.log(`Status: ${status}`);
@@ -221,7 +257,7 @@ wss.on('connection', ws => {
       }
       const status = await mqtt.publishMessage(data.topic, data.message, { retain: data.retain || false  });
       // Send a success message back to the client
-      ws.send(JSON.stringify({ status: status }));
+      ws.send(JSON.stringify({ topic:data.topic, status: status }));
     }
   });
 
@@ -249,17 +285,17 @@ wss.getUniqueID = function () {
     return s4() + s4() + '-' + s4();
 };
 
-const interval = setInterval(function ping() {
+const interval = setInterval(async function ping() {
   clientsMap.forEach((client, id) => {
     if (client.isAlive === false) {
       console.log(`ping error terminating connection for client ${id}`);
       client.ws.terminate();
       clientsMap.delete(id);
-      return;
+    } else {
+      client.isAlive = false;
+      console.log(`sending ping to client ${id}`);
+      client.ws.ping('ping');
     }
-    client.isAlive = false;
-    console.log(`sending ping to client ${id}`);
-    client.ws.ping('ping');
   });
 }, 30000);
 
