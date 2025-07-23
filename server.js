@@ -71,8 +71,12 @@ app.post('/api/login', async (req, res) => {
 });
 
 app.get('/api/users', (req, res) => {
+  console.log('Fetching users from file');
   const users = readUsers();
   const safeUsers = users.map(({ username, email }) => ({ username, email }));
+  if (!safeUsers || safeUsers.length === 0) {
+    return res.status(404).json({ error: 'No users found' });
+  } 
   res.json(safeUsers);
 });
 
