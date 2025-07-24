@@ -8,7 +8,7 @@ const path = require('path');
 const bcrypt = require('bcrypt');
 const { WebSocketServer } = require('ws');
 
-const mqttRoutes = require('./routes/mqttRoutes');
+const Routes = require('./routes/routes');
 const mqtt = require('./components/mqtt/mqttService');
 const { readUsers, writeUsers } = require('./components/db/users');
 const { readServers } = require('./components/db/servers');
@@ -37,83 +37,14 @@ const webserver = http.createServer(app);
 
 app.use(cors());
 app.use(bodyParser.json());
-
-app.get('/api/hello', (req, res) => {
-  res.json({ message: 'Server up and running!' });
-});
-
-app.post('/api/register', async (req, res) => {
-  const { username, email, password } = req.body;
-  const users = readUsers();
-  
-  if (users.some(user => user.username === username || user.email === email)) {
-    return res.status(400).json({ error: 'Username or email already exists' });
-  }
-
-  const hashedPassword = await bcrypt.hash(password, 10);
-  users.push({ username, email, password: hashedPassword });
-  writeUsers(users);
-  
-  res.status(201).json({ message: 'User registered successfully' });
-});
-
-app.post('/api/login', async (req, res) => {
-  const { username, password } = req.body;
-  const users = readUsers();
-  
-  const user = users.find(u => u.username === username);
-  
-  if (user && await bcrypt.compare(password, user.password)) {
-    res.json({ message: 'Login successful' });
-  } else {
-    res.status(401).json({ error: 'Invalid credentials' });
-  }
-});
-
-app.get('/api/users', (req, res) => {
-  console.log('Fetching users from file');
-  const users = readUsers();
-  const safeUsers = users.map(({ username, email }) => ({ username, email }));
-  if (!safeUsers || safeUsers.length === 0) {
-    return res.status(404).json({ error: 'No users found' });
-  } 
-  res.json(safeUsers);
-});
-
-app.get('/api/servers', (req, res) => {
-  console.log('Fetching servers from file');  
-  const servers = readServers();
-  console.log(servers);
-  if (!servers || servers.length === 0) {
-    return res.status(404).json({ error: 'No servers found' });
-  }
-  res.json(servers);
-});
-
-app.get('/api/image', (req, res) => {
-  console.log('Fetching image from file');  
-  // Adjust the path to your image file as needed
-  fs.readFile('images/istockphoto-2167092274-1024x1024.jpg', (err, data) => {
-    if (err) {
-      console.error('Error reading image file:', err);
-      return res.status(500).json({ error: 'Error reading image file' });
-    }
-    res.writeHead(200, { 'Content-Type': 'image/jpeg' });
-    console.log('Sending image data');
-
-    // Send the image data
-    res.end(data);
-  }
-  );
-});
-
 app.use(express.static(path.join(__dirname, '../frontend/build')));
 
 app.get('/', function (req, res) {
   res.sendFile(path.join(__dirname, '../frontend/build', 'index.html'));
 });
 
-app.use('/api/mqtt', mqttRoutes);
+app.use('/api/mqtt', Routes);
+app.use('/api/http', Routes);
 
 // Handle 404 errors
 app.use((req, res) => { 
@@ -124,6 +55,12 @@ webserver.listen(port, () => {
   console.log(`Server is running on port: ${port}`);
 });
 
+// Create a WebSocket server
+const wss = new WebSocketServer({ noServer: true, path: '/api/ws' });
+
+// Initialize MQTT service with WebSocket server
+mqtt.initializeMqttService(wss);
+
 // WebSocket upgrade handling
 webserver.on('upgrade', (req,socket,head) => {
   // Handle WebSocket upgrade requests
@@ -132,12 +69,6 @@ webserver.on('upgrade', (req,socket,head) => {
     wss.emit('connection',ws,req)  
   })
 })
-
-// Create a WebSocket server
-const wss = new WebSocketServer({ noServer: true })
-
-// Initialize MQTT service with WebSocket server
-mqtt.initializeMqttService(wss);
 
 // WebSocket connection handling
 wss.on('connection', ws => {
@@ -262,6 +193,8 @@ wss.on('connection', ws => {
       const status = await mqtt.publishMessage(data.topic, data.message, { retain: data.retain || false  });
       // Send a success message back to the client
       ws.send(JSON.stringify({ topic:data.topic, status: status }));
+    } else  {
+      console.log(`Received command: ${data.cmd} with data: ${data.data}`);
     }
   });
 
