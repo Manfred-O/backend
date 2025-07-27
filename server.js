@@ -77,6 +77,9 @@ wss.on('connection', ws => {
 
   console.log(`New client connected with ID: ${ws.id}`)  
 
+  // Get the token from the WebSocket handshake
+  const token = ws.handshake.headers['sec-websocket-key'];
+
   // Add the client to the Map
   /*
   clientsMap.set(ws.id, {
@@ -87,8 +90,10 @@ wss.on('connection', ws => {
   */
   // Initialize the client in the Map
   clientsMap.set(ws.id, {
+    isAlive: true,    
     ws: ws,
-    isAlive: true
+    token: token,
+    timestamp: Date.now()
   });
 
   // Ping pong to maintain the connection
@@ -125,6 +130,15 @@ wss.on('connection', ws => {
 
     // Get the client from the Map
     const client = clientsMap.get(ws.id);
+
+    const storedToken = client.token;
+    const storedTimestamp = client.timestamp;
+
+    // Verify the token
+    if (storedToken !== token || storedTimestamp !== data.timestamp) {
+      ws.send(JSON.stringify({ error: 'Invalid token' }));
+      return;
+    }
 
     // Invoke the route or handler based on the incoming message    
     if (data.route === 'connect') {
