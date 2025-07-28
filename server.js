@@ -1,39 +1,46 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const path = require('path');
-const bcrypt = require('bcrypt');
 const { WebSocketServer } = require('ws');
+const WebSocket = require('ws');
+const dotenv = require('dotenv');
 
 const Routes = require('./routes/routes');
 const mqtt = require('./components/mqtt/mqttService');
 const { readUsers, writeUsers } = require('./components/db/users');
 const { readServers } = require('./components/db/servers');
+const { getUniqueID } = require('./components/helpers/helperFunctions');
+
+dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5000;
+const tls = process.env.TLS || false;
 
 const clientsMap = new Map();
+let webserver = null
 let mqttConnected = false;
 let connectedClientId = null;
 
-/*
-var options = {
-  key: fs.readFileSync('certs/tls.key'),
-  cert: fs.readFileSync('certs/tls.crt'),
-  ca: fs.readFileSync('certs/rootCA.crt'),
-  requestCert: false
-};
-*/
-
-// Uncomment the line below to use HTTPS instead of HTTP
-//const webserver = https.createServer(options, app);
-
-// Uncomment the line below to use HTTP instead of HTTPS
-const webserver = http.createServer(app);
+// TLS configuration for HTTPS server
+if (tls) {
+  console.log('TLS enabled');
+  // Load TLS certificates from the 'certs' directory
+  var options = {
+    key: fs.readFileSync('certs/tls.key'),
+    cert: fs.readFileSync('certs/tls.crt'),
+    ca: fs.readFileSync('certs/rootCA.crt'),
+    requestCert: false
+  };
+  webserver = https.createServer(options, app);
+} else {
+  console.log('TLS disabled');
+  // Load TLS certificates from the 'certs' directory
+  webserver = http.createServer(app);  
+}
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -60,6 +67,7 @@ const wss = new WebSocketServer({ noServer: true, path: '/api/ws' });
 
 // Initialize MQTT service with WebSocket server
 mqtt.initializeMqttService(wss);
+wss.getUniqueID = () => getUniqueID();
 
 // WebSocket upgrade handling
 webserver.on('upgrade', (req,socket,head) => {
@@ -136,7 +144,7 @@ wss.on('connection', ws => {
 
     // Verify the token
     if (storedToken !== token || storedTimestamp !== data.timestamp) {
-      ws.send(JSON.stringify({ error: 'Invalid token' }));
+      ws.send(JSON.stringify({ error: 'Invalid token, autorization failed' }));
       return;
     }
 
@@ -229,12 +237,14 @@ wss.on('connection', ws => {
 
 });
 
+/*
 wss.getUniqueID = function () {
     function s4() {
         return Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
     }
     return s4() + s4() + '-' + s4();
 };
+*/
 
 const interval = setInterval(async function ping() {
   clientsMap.forEach((client, id) => {
