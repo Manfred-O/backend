@@ -5,3 +5,4 @@ export function getUniqueID() {
     }
     return s4() + s4() + '-' + s4();
 };
+

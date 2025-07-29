@@ -4,9 +4,10 @@ const bodyParser = require('body-parser');
 const http = require('http');
 const https = require('https');
 const path = require('path');
-const { WebSocketServer } = require('ws');
-const WebSocket = require('ws');
+const { WebSocketServer, WebSocket } = require('ws');
 const dotenv = require('dotenv');
+const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 
 const Routes = require('./routes/routes');
 const mqtt = require('./components/mqtt/mqttService');
@@ -24,6 +25,7 @@ const clientsMap = new Map();
 let webserver = null
 let mqttConnected = false;
 let connectedClientId = null;
+let initialized = false;
 
 // TLS configuration for HTTPS server
 if (tls) {
@@ -69,24 +71,98 @@ const wss = new WebSocketServer({ noServer: true, path: '/api/ws' });
 mqtt.initializeMqttService(wss);
 wss.getUniqueID = () => getUniqueID();
 
+function generateAcceptKey(key) {
+    const guid = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+    const sha1 = crypto.createHash('sha1');
+    sha1.update(key + guid);
+    return sha1.digest('base64');
+}
+
+function prepareHandshakeResponse (id) {
+  const acceptKey = generateAcceptKey(id)
+
+  return [
+    'HTTP/1.1 101 Switching Protocols',
+    'Upgrade: websocket',
+    'Connection: Upgrade',
+    `sec-webSocket-accept: ${acceptKey}`,
+    // This empty line MUST be present for the response to be valid
+    ''
+  ].map(line => line.concat('\r\n')).join('')
+}
+
+function onSocketUpgrade (req, socket, head) {
+  const { 'sec-websocket-key': webClientSocketKey } = req.headers
+  const response = prepareHandshakeResponse(webClientSocketKey)
+  socket.write(response);
+  socket.on('readable', () => {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      console.log(`Received message: ${message}`);
+      wss.emit('connection', ws, req);
+      });
+  });
+}
+
+webserver.on('upgrade', onSocketUpgrade);
+
+/*
 // WebSocket upgrade handling
 webserver.on('upgrade', (req,socket,head) => {
+  console.log('upgrading to ws ...');  
+
+  console.log({head: req.headers});
+ 
   // Handle WebSocket upgrade requests
   wss.handleUpgrade(req,socket,head, (ws) => {
-    console.log('upgrading to ws ...')
-    wss.emit('connection',ws,req)  
+
+        // Verify the request
+    const secWebSocketKey = req.headers['sec-websocket-key'];
+    const secWebSocketAccept = generateAcceptKey(secWebSocketKey);
+
+    // Create the response header
+    const response = [
+      'HTTP/1.1 101 Switching Protocols',
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      `Sec-WebSocket-Accept: ${secWebSocketAccept}`,
+      ''
+    ].join('\r\n');
+    socket.write(response + '\r\n');
+
+    console.log('response header:', response);
+    ws.on('error', (error) => {
+      console.error('WebSocket error:', error);
+    });
+    ws.on('message', (message) => {
+      console.log('Received message:', message);
+    });
+    ws.on('open', () => {
+      console.log('upgrading finished');
+      //wss.emit('connection', ws, req);     
+    });
   })
 })
+*/
 
 // WebSocket connection handling
-wss.on('connection', ws => {
+wss.on('connection', (ws,req) => {
   // Generate a unique ID for the WebSocket connection
   ws.id = wss.getUniqueID();
 
   console.log(`New client connected with ID: ${ws.id}`)  
 
   // Get the token from the WebSocket handshake
-  const token = ws.handshake.headers['sec-websocket-key'];
+  const { 'sec-websocket-key': webClientSocketKey } = req.headers
+  console.log({webClientSocketKey});
+  //const token = webClientSocketKey;
+  const userId = ws.id;
+
+  // Generate a token and send it back to the client
+  const token = jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '1h' });
+  console.log(`WebSocket server is listening and sends token: ${token}`);
+  ws.send(JSON.stringify({ token: token }));
+   
+  
 
   // Add the client to the Map
   /*
@@ -143,81 +219,84 @@ wss.on('connection', ws => {
     const storedTimestamp = client.timestamp;
 
     // Verify the token
-    if (storedToken !== token || storedTimestamp !== data.timestamp) {
-      ws.send(JSON.stringify({ error: 'Invalid token, autorization failed' }));
+    try {
+      const decoded = jwt.verify(data.token, process.env.JWT_SECRET);
+      // Authenticate the client using the decoded token
+      // Invoke the route or handler based on the incoming message    
+      if (data.route === 'connect') {
+        // Handle connect action
+        console.log('Mqtt Client connected');
+        if (!mqttConnected) {
+          console.log(`Connecting to MQTT server with index: ${data.serverIndex}`);
+          if (data.serverIndex === undefined || data.serverIndex < 0) {
+            ws.send(JSON.stringify({ error: 'serverIndex is required' }));  
+            return;
+          }
+
+          const servers = readServers();
+          if (data.serverIndex >= servers.length) {
+            ws.send(JSON.stringify({ error: 'Invalid serverIndex' }));  
+            return;
+          }
+
+          console.log(`Connected to MQTT server with index: ${servers[data.serverIndex].name}`);       
+
+          try {
+            const status = await mqtt.connect(servers[data.serverIndex]);
+            console.log(`Status: ${status}`);
+            if (status === 'connected' || status.includes('success')) {
+              mqttConnected = true;
+              connectedClientId = ws.id;
+              ws.send(JSON.stringify({ status: status }));
+            } else {
+              mqttConnected = false;
+              ws.send(JSON.stringify({ status: status }));
+            }
+          } catch (error) {
+            console.error('Error connecting to MQTT broker:', error);
+            mqttConnected = false;
+            ws.send(JSON.stringify({ error: 'Failed to connect to MQTT broker' }));
+            return;
+          }
+        } else {
+          ws.send(JSON.stringify({ status: 'Already connected to MQTT broker' }));
+        }
+      } else if (data.route === 'disconnect') {
+        // Handle disconnect action
+        console.log(`Mqtt Client should disconnect ${clientsMap.size}`);
+        if (mqttConnected && clientsMap.size ===1) {
+          const status = await mqtt.disconnect();
+          console.log(`Status: ${status}`);
+          mqttConnected = false;
+          connectedClientId = null
+          ws.send(JSON.stringify({ status: status }));
+        } else if (!mqttConnected) {
+          ws.send(JSON.stringify({ status: 'Not connected to MQTT broker' }));
+        } else {
+          ws.send(JSON.stringify({ status: 'Other clients are still connected' }));
+        }
+      } else if (data.route === 'publish') {
+        // Handle publish action
+        console.log(`Publishing message: ${data.message} to topic: ${data.topic}`);
+        if (!data.topic || !data.message) {
+          ws.send(JSON.stringify({ error: 'topic and message are required' }));
+          return;
+        }
+        if (!mqttConnected) {
+          ws.send(JSON.stringify({ error: 'Not connected to MQTT broker' }));
+          return;
+        }
+        const status = await mqtt.publishMessage(data.topic, data.message, { retain: data.retain || false  });
+        // Send a success message back to the client
+        ws.send(JSON.stringify({ topic:data.topic, status: status }));
+      } else  {
+        console.log(`Received command: ${data.cmd} with data: ${data.data}`);
+      }
+    } catch (err) {
+      ws.close(1008, 'Authentication failed');
       return;
     }
 
-    // Invoke the route or handler based on the incoming message    
-    if (data.route === 'connect') {
-      // Handle connect action
-      console.log('Mqtt Client connected');
-      if (!mqttConnected) {
-        console.log(`Connecting to MQTT server with index: ${data.serverIndex}`);
-        if (data.serverIndex === undefined || data.serverIndex < 0) {
-          ws.send(JSON.stringify({ error: 'serverIndex is required' }));  
-          return;
-        }
-
-        const servers = readServers();
-        if (data.serverIndex >= servers.length) {
-          ws.send(JSON.stringify({ error: 'Invalid serverIndex' }));  
-          return;
-        }
-
-        console.log(`Connected to MQTT server with index: ${servers[data.serverIndex].name}`);       
-
-        try {
-          const status = await mqtt.connect(servers[data.serverIndex]);
-          console.log(`Status: ${status}`);
-          if (status === 'connected' || status.includes('success')) {
-            mqttConnected = true;
-            connectedClientId = ws.id;
-            ws.send(JSON.stringify({ status: status }));
-          } else {
-            mqttConnected = false;
-            ws.send(JSON.stringify({ status: status }));
-          }
-        } catch (error) {
-          console.error('Error connecting to MQTT broker:', error);
-          mqttConnected = false;
-          ws.send(JSON.stringify({ error: 'Failed to connect to MQTT broker' }));
-          return;
-        }
-      } else {
-        ws.send(JSON.stringify({ status: 'Already connected to MQTT broker' }));
-      }
-    } else if (data.route === 'disconnect') {
-      // Handle disconnect action
-      console.log(`Mqtt Client should disconnect ${clientsMap.size}`);
-      if (mqttConnected && clientsMap.size ===1) {
-        const status = await mqtt.disconnect();
-        console.log(`Status: ${status}`);
-        mqttConnected = false;
-        connectedClientId = null
-        ws.send(JSON.stringify({ status: status }));
-      } else if (!mqttConnected) {
-        ws.send(JSON.stringify({ status: 'Not connected to MQTT broker' }));
-      } else {
-        ws.send(JSON.stringify({ status: 'Other clients are still connected' }));
-      }
-    } else if (data.route === 'publish') {
-      // Handle publish action
-      console.log(`Publishing message: ${data.message} to topic: ${data.topic}`);
-      if (!data.topic || !data.message) {
-        ws.send(JSON.stringify({ error: 'topic and message are required' }));
-        return;
-      }
-      if (!mqttConnected) {
-        ws.send(JSON.stringify({ error: 'Not connected to MQTT broker' }));
-        return;
-      }
-      const status = await mqtt.publishMessage(data.topic, data.message, { retain: data.retain || false  });
-      // Send a success message back to the client
-      ws.send(JSON.stringify({ topic:data.topic, status: status }));
-    } else  {
-      console.log(`Received command: ${data.cmd} with data: ${data.data}`);
-    }
   });
 
   // Handle WebSocket pong messages to maintain the connection
